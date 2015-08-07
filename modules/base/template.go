@@ -55,6 +55,9 @@ func ShortSha(sha1 string) string {
 func DetectEncoding(content []byte) (string, error) {
 	detector := chardet.NewTextDetector()
 	result, err := detector.DetectBest(content)
+	if result.Charset != "UTF-8" && len(setting.AnsiCharset) > 0 {
+		return setting.AnsiCharset, err
+	}
 	return result.Charset, err
 }
 
@@ -64,7 +67,7 @@ func ToUtf8WithErr(content []byte) (error, string) {
 		return err, ""
 	}
 
-	if charsetLabel == "utf8" {
+	if charsetLabel == "UTF-8" {
 		return nil, string(content)
 	}
 
@@ -175,7 +178,7 @@ var TemplateFuncs template.FuncMap = map[string]interface{}{
 	"Oauth2Name":            Oauth2Name,
 	"ToUtf8":                ToUtf8,
 	"EscapePound": func(str string) string {
-		return strings.Replace(str, "#", "%23", -1)
+		return strings.Replace(strings.Replace(str, "%", "%25", -1), "#", "%23", -1)
 	},
 	"RenderCommitMessage": RenderCommitMessage,
 }

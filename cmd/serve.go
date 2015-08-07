@@ -16,6 +16,7 @@ import (
 	"github.com/codegangsta/cli"
 
 	"github.com/gogits/gogs/models"
+	"github.com/gogits/gogs/modules/httplib"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
 	"github.com/gogits/gogs/modules/uuid"
@@ -82,7 +83,7 @@ func runServ(c *cli.Context) {
 	}
 
 	if len(c.Args()) < 1 {
-		fail("Not enough arguments", "Not enough arugments")
+		fail("Not enough arguments", "Not enough arguments")
 	}
 
 	keys := strings.Split(c.Args()[0], "-")
@@ -97,12 +98,12 @@ func runServ(c *cli.Context) {
 
 	user, err := models.GetUserByKeyId(keyId)
 	if err != nil {
-		fail("internal error", "Fail to get user by key ID(%d): %v", keyId, err)
+		fail("internal error", "Failed to get user by key ID(%d): %v", keyId, err)
 	}
 
 	cmd := os.Getenv("SSH_ORIGINAL_COMMAND")
 	if cmd == "" {
-		println("Hi", user.Name, "! You've successfully authenticated, but Gogs does not provide shell access.")
+		fmt.Printf("Hi, %s! You've successfully authenticated, but Gogs does not provide shell access.\n", user.Name)
 		if user.IsAdmin {
 			println("If this is unexpected, please log in with password and setup Gogs under another user.")
 		}
@@ -113,7 +114,7 @@ func runServ(c *cli.Context) {
 	repoPath := strings.Trim(args, "'")
 	rr := strings.SplitN(repoPath, "/", 2)
 	if len(rr) != 2 {
-		fail("Invalid repository path", "Invalide repository path: %v", args)
+		fail("Invalid repository path", "Invalid repository path: %v", args)
 	}
 	repoUserName := rr[0]
 	repoName := strings.TrimSuffix(rr[1], ".git")
@@ -123,7 +124,7 @@ func runServ(c *cli.Context) {
 		if err == models.ErrUserNotExist {
 			fail("Repository owner does not exist", "Unregistered owner: %s", repoUserName)
 		}
-		fail("Internal error", "Fail to get repository owner(%s): %v", repoUserName, err)
+		fail("Internal error", "Failed to get repository owner(%s): %v", repoUserName, err)
 	}
 
 	repo, err := models.GetRepositoryByName(repoUser.Id, repoName)
@@ -135,7 +136,7 @@ func runServ(c *cli.Context) {
 				fail(_ACCESS_DENIED_MESSAGE, "Repository does not exist: %s/%s", repoUser.Name, repoName)
 			}
 		}
-		fail("Internal error", "Fail to get repository: %v", err)
+		fail("Internal error", "Failed to get repository: %v", err)
 	}
 
 	requestedMode, has := COMMANDS[verb]
@@ -171,7 +172,7 @@ func runServ(c *cli.Context) {
 	gitcmd.Stdin = os.Stdin
 	gitcmd.Stderr = os.Stderr
 	if err = gitcmd.Run(); err != nil {
-		fail("Internal error", "Fail to execute git command: %v", err)
+		fail("Internal error", "Failed to execute git command: %v", err)
 	}
 
 	if requestedMode == models.ACCESS_MODE_WRITE {
@@ -184,13 +185,19 @@ func runServ(c *cli.Context) {
 			err = models.Update(task.RefName, task.OldCommitId, task.NewCommitId,
 				user.Name, repoUserName, repoName, user.Id)
 			if err != nil {
-				log.GitLogger.Error(2, "Fail to update: %v", err)
+				log.GitLogger.Error(2, "Failed to update: %v", err)
 			}
 		}
 
 		if err = models.DelUpdateTasksByUuid(uuid); err != nil {
 			log.GitLogger.Fatal(2, "DelUpdateTasksByUuid: %v", err)
 		}
+	}
+
+	// Send deliver hook request.
+	resp, err := httplib.Head(setting.AppUrl + setting.AppSubUrl + repoUserName + "/" + repoName + "/hooks/trigger").Response()
+	if err == nil {
+		resp.Body.Close()
 	}
 
 	// Update key activity.

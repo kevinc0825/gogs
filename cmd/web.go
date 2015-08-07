@@ -69,7 +69,7 @@ type VerChecker struct {
 // checkVersion checks if binary matches the version of templates files.
 func checkVersion() {
 	// Templates.
-	data, err := ioutil.ReadFile(path.Join(setting.StaticRootPath, "templates/.VERSION"))
+	data, err := ioutil.ReadFile(setting.StaticRootPath + "/templates/.VERSION")
 	if err != nil {
 		log.Fatal(4, "Fail to read 'templates/.VERSION': %v", err)
 	}
@@ -80,12 +80,12 @@ func checkVersion() {
 	// Check dependency version.
 	checkers := []VerChecker{
 		{"github.com/Unknwon/macaron", macaron.Version, "0.5.4"},
-		{"github.com/macaron-contrib/binding", binding.Version, "0.0.6"},
+		{"github.com/macaron-contrib/binding", binding.Version, "0.1.0"},
 		{"github.com/macaron-contrib/cache", cache.Version, "0.0.7"},
 		{"github.com/macaron-contrib/csrf", csrf.Version, "0.0.3"},
 		{"github.com/macaron-contrib/i18n", i18n.Version, "0.0.7"},
 		{"github.com/macaron-contrib/session", session.Version, "0.1.6"},
-		{"gopkg.in/ini.v1", ini.Version, "1.2.0"},
+		{"gopkg.in/ini.v1", ini.Version, "1.3.4"},
 	}
 	for _, c := range checkers {
 		ver := strings.Join(strings.Split(c.Version(), ".")[:3], ".")
@@ -98,7 +98,9 @@ func checkVersion() {
 // newMacaron initializes Macaron instance.
 func newMacaron() *macaron.Macaron {
 	m := macaron.New()
-	m.Use(macaron.Logger())
+	if !setting.DisableRouterLog {
+		m.Use(macaron.Logger())
+	}
 	m.Use(macaron.Recovery())
 	if setting.EnableGzip {
 		m.Use(macaron.Gziper())
@@ -109,14 +111,14 @@ func newMacaron() *macaron.Macaron {
 	m.Use(macaron.Static(
 		path.Join(setting.StaticRootPath, "public"),
 		macaron.StaticOptions{
-			SkipLogging: !setting.DisableRouterLog,
+			SkipLogging: setting.DisableRouterLog,
 		},
 	))
 	m.Use(macaron.Static(
 		setting.AvatarUploadPath,
 		macaron.StaticOptions{
 			Prefix:      "avatars",
-			SkipLogging: !setting.DisableRouterLog,
+			SkipLogging: setting.DisableRouterLog,
 		},
 	))
 	m.Use(macaron.Renderer(macaron.RenderOptions{
@@ -242,7 +244,7 @@ func runWeb(ctx *cli.Context) {
 				ctx.HandleAPI(404, "Page not found")
 			})
 		})
-	})
+	}, ignSignIn)
 
 	// User.
 	m.Group("/user", func() {
@@ -416,14 +418,18 @@ func runWeb(ctx *cli.Context) {
 			m.Post("/:index/milestone", repo.UpdateIssueMilestone)
 			m.Post("/:index/assignee", repo.UpdateAssignee)
 			m.Get("/:index/attachment/:id", repo.IssueGetAttachment)
-			m.Post("/labels/new", bindIgnErr(auth.CreateLabelForm{}), repo.NewLabel)
-			m.Post("/labels/edit", bindIgnErr(auth.CreateLabelForm{}), repo.UpdateLabel)
-			m.Post("/labels/delete", repo.DeleteLabel)
-			m.Get("/milestones/new", repo.NewMilestone)
-			m.Post("/milestones/new", bindIgnErr(auth.CreateMilestoneForm{}), repo.NewMilestonePost)
-			m.Get("/milestones/:index/edit", repo.UpdateMilestone)
-			m.Post("/milestones/:index/edit", bindIgnErr(auth.CreateMilestoneForm{}), repo.UpdateMilestonePost)
-			m.Get("/milestones/:index/:action", repo.UpdateMilestone)
+		})
+		m.Group("/labels", func() {
+			m.Post("/new", bindIgnErr(auth.CreateLabelForm{}), repo.NewLabel)
+			m.Post("/edit", bindIgnErr(auth.CreateLabelForm{}), repo.UpdateLabel)
+			m.Post("/delete", repo.DeleteLabel)
+		})
+		m.Group("/milestones", func() {
+			m.Get("/new", repo.NewMilestone)
+			m.Post("/new", bindIgnErr(auth.CreateMilestoneForm{}), repo.NewMilestonePost)
+			m.Get("/:index/edit", repo.UpdateMilestone)
+			m.Post("/:index/edit", bindIgnErr(auth.CreateMilestoneForm{}), repo.UpdateMilestonePost)
+			m.Get("/:index/:action", repo.UpdateMilestone)
 		})
 
 		m.Post("/comment/:action", repo.Comment)
@@ -438,16 +444,16 @@ func runWeb(ctx *cli.Context) {
 
 	m.Group("/:username/:reponame", func() {
 		m.Get("/releases", middleware.RepoRef(), repo.Releases)
-		m.Get("/issues", repo.Issues)
+		m.Get("/issues", repo.RetrieveLabels, repo.Issues)
 		m.Get("/issues/:index", repo.ViewIssue)
-		m.Get("/issues/milestones", repo.Milestones)
+		m.Get("/labels/", repo.RetrieveLabels, repo.Labels)
+		m.Get("/milestones", repo.Milestones)
 		m.Get("/pulls", repo.Pulls)
 		m.Get("/branches", repo.Branches)
 		m.Get("/archive/*", repo.Download)
-		m.Get("/issues2/", repo.Issues2)
 		m.Get("/pulls2/", repo.PullRequest2)
-		m.Get("/labels2/", repo.Labels2)
 		m.Get("/milestone2/", repo.Milestones2)
+		m.Head("/hooks/trigger", repo.TriggerHook)
 
 		m.Group("", func() {
 			m.Get("/src/*", repo.Home)
@@ -460,7 +466,11 @@ func runWeb(ctx *cli.Context) {
 	}, ignSignIn, middleware.RepoAssignment(true))
 
 	m.Group("/:username", func() {
-		m.Get("/:reponame", ignSignIn, middleware.RepoAssignment(true, true), middleware.RepoRef(), repo.Home)
+		m.Group("/:reponame", func() {
+			m.Get("", repo.Home)
+			m.Get(".git", repo.Home)
+		}, ignSignIn, middleware.RepoAssignment(true, true), middleware.RepoRef())
+
 		m.Any("/:reponame/*", ignSignInAndCsrf, repo.Http)
 	})
 

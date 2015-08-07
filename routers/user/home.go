@@ -152,6 +152,7 @@ func ShowSSHKeys(ctx *middleware.Context, uid int64) {
 	var buf bytes.Buffer
 	for i := range keys {
 		buf.WriteString(keys[i].OmitEmail())
+		buf.WriteString("\n")
 	}
 	ctx.RenderData(200, buf.Bytes())
 }
@@ -192,11 +193,6 @@ func Profile(ctx *middleware.Context) {
 	if u.IsOrganization() {
 		ctx.Redirect(setting.AppSubUrl + "/org/" + u.Name)
 		return
-	}
-
-	// For security reason, hide e-mail address for anonymous visitors.
-	if !ctx.IsSigned {
-		u.Email = ""
 	}
 	ctx.Data["Owner"] = u
 
@@ -261,7 +257,7 @@ func Email2User(ctx *middleware.Context) {
 	ctx.Redirect(setting.AppSubUrl + "/user/" + u.Name)
 }
 
-func Issues(ctx *middleware.Context) {	
+func Issues(ctx *middleware.Context) {
 	ctx.Data["Title"] = ctx.Tr("issues")
 	ctx.Data["PageIsDashboard"] = true
 	ctx.Data["PageIsIssues"] = true
@@ -388,8 +384,8 @@ func Issues(ctx *middleware.Context) {
 	} else {
 		ctx.Data["ShowCount"] = issueStats.OpenCount
 	}
-	
+
 	ctx.Data["ContextUser"] = ctx.User
-	
+
 	ctx.HTML(200, ISSUES)
 }

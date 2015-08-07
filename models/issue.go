@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/Unknwon/com"
-	"github.com/go-xorm/xorm"
 
 	"github.com/gogits/gogs/modules/log"
+	"github.com/gogits/gogs/modules/setting"
 )
 
 var (
@@ -31,7 +31,7 @@ var (
 
 // Issue represents an issue or pull request of repository.
 type Issue struct {
-	Id              int64
+	ID              int64 `xorm:"pk autoincr"`
 	RepoId          int64 `xorm:"INDEX"`
 	Index           int64 // Index in one repository.
 	Name            string
@@ -72,7 +72,7 @@ func (i *Issue) GetLabels() error {
 	strIds := strings.Split(strings.TrimSuffix(i.LabelIds[1:], "|"), "|$")
 	i.Labels = make([]*Label, 0, len(strIds))
 	for _, strId := range strIds {
-		id, _ := com.StrTo(strId).Int64()
+		id := com.StrTo(strId).MustInt64()
 		if id > 0 {
 			l, err := GetLabelById(id)
 			if err != nil {
@@ -99,34 +99,29 @@ func (i *Issue) GetAssignee() (err error) {
 }
 
 func (i *Issue) Attachments() []*Attachment {
-	a, _ := GetAttachmentsForIssue(i.Id)
+	a, _ := GetAttachmentsForIssue(i.ID)
 	return a
 }
 
 func (i *Issue) AfterDelete() {
-	_, err := DeleteAttachmentsByIssue(i.Id, true)
+	_, err := DeleteAttachmentsByIssue(i.ID, true)
 
 	if err != nil {
-		log.Info("Could not delete files for issue #%d: %s", i.Id, err)
+		log.Info("Could not delete files for issue #%d: %s", i.ID, err)
 	}
 }
 
 // CreateIssue creates new issue for repository.
 func NewIssue(issue *Issue) (err error) {
 	sess := x.NewSession()
-	defer sess.Close()
+	defer sessionRelease(sess)
 	if err = sess.Begin(); err != nil {
 		return err
 	}
 
 	if _, err = sess.Insert(issue); err != nil {
-		sess.Rollback()
 		return err
-	}
-
-	rawSql := "UPDATE `repository` SET num_issues = num_issues + 1 WHERE id = ?"
-	if _, err = sess.Exec(rawSql, issue.RepoId); err != nil {
-		sess.Rollback()
+	} else if _, err = sess.Exec("UPDATE `repository` SET num_issues = num_issues + 1 WHERE id = ?", issue.RepoId); err != nil {
 		return err
 	}
 
@@ -179,7 +174,7 @@ func GetIssueByIndex(rid, index int64) (*Issue, error) {
 
 // GetIssueById returns an issue by ID.
 func GetIssueById(id int64) (*Issue, error) {
-	issue := &Issue{Id: id}
+	issue := &Issue{ID: id}
 	has, err := x.Get(issue)
 	if err != nil {
 		return nil, err
@@ -190,30 +185,29 @@ func GetIssueById(id int64) (*Issue, error) {
 }
 
 // GetIssues returns a list of issues by given conditions.
-func GetIssues(uid, rid, pid, mid int64, page int, isClosed bool, labelIds, sortType string) ([]Issue, error) {
-	sess := x.Limit(20, (page-1)*20)
+func GetIssues(uid, assigneeID, repoID, posterID, milestoneID int64, page int, isClosed, isMention bool, labelIds, sortType string) ([]Issue, error) {
+	sess := x.Limit(setting.IssuePagingNum, (page-1)*setting.IssuePagingNum)
 
-	if rid > 0 {
-		sess.Where("repo_id=?", rid).And("is_closed=?", isClosed)
+	if repoID > 0 {
+		sess.Where("issue.repo_id=?", repoID).And("issue.is_closed=?", isClosed)
 	} else {
-		sess.Where("is_closed=?", isClosed)
+		sess.Where("issue.is_closed=?", isClosed)
 	}
 
-	if uid > 0 {
-		sess.And("assignee_id=?", uid)
-	} else if pid > 0 {
-		sess.And("poster_id=?", pid)
+	if assigneeID > 0 {
+		sess.And("issue.assignee_id=?", assigneeID)
+	} else if posterID > 0 {
+		sess.And("issue.poster_id=?", posterID)
 	}
 
-	if mid > 0 {
-		sess.And("milestone_id=?", mid)
+	if milestoneID > 0 {
+		sess.And("issue.milestone_id=?", milestoneID)
 	}
 
 	if len(labelIds) > 0 {
 		for _, label := range strings.Split(labelIds, ",") {
-			// Prevent SQL inject.
 			if com.StrTo(label).MustInt() > 0 {
-				sess.And("label_ids like '%$" + label + "|%'")
+				sess.And("label_ids like ?", "%$"+label+"|%")
 			}
 		}
 	}
@@ -235,9 +229,16 @@ func GetIssues(uid, rid, pid, mid int64, page int, isClosed bool, labelIds, sort
 		sess.Desc("created")
 	}
 
+	if isMention {
+		queryStr := "issue.id = issue_user.issue_id AND issue_user.is_mentioned=1"
+		if uid > 0 {
+			queryStr += " AND issue_user.uid = " + com.ToStr(uid)
+		}
+		sess.Join("INNER", "issue_user", queryStr)
+	}
+
 	var issues []Issue
-	err := sess.Find(&issues)
-	return issues, err
+	return issues, sess.Find(&issues)
 }
 
 type IssueStatus int
@@ -248,10 +249,9 @@ const (
 )
 
 // GetIssuesByLabel returns a list of issues by given label and repository.
-func GetIssuesByLabel(repoId int64, label string) ([]*Issue, error) {
+func GetIssuesByLabel(repoID, labelID int64) ([]*Issue, error) {
 	issues := make([]*Issue, 0, 10)
-	err := x.Where("repo_id=?", repoId).And("label_ids like '%$" + label + "|%'").Find(&issues)
-	return issues, err
+	return issues, x.Where("repo_id=?", repoID).And("label_ids like '%$" + com.ToStr(labelID) + "|%'").Find(&issues)
 }
 
 // GetIssueCountByPoster returns number of issues of repository by poster.
@@ -281,8 +281,9 @@ type IssueUser struct {
 	IsClosed    bool
 }
 
+// FIXME: organization
 // NewIssueUserPairs adds new issue-user pairs for new issue of repository.
-func NewIssueUserPairs(repo *Repository, issueID, orgID, posterID, assigneeID int64) (err error) {
+func NewIssueUserPairs(repo *Repository, issueID, orgID, posterID, assigneeID int64) error {
 	users, err := repo.GetCollaborators()
 	if err != nil {
 		return err
@@ -295,6 +296,7 @@ func NewIssueUserPairs(repo *Repository, issueID, orgID, posterID, assigneeID in
 
 	isNeedAddPoster := true
 	for _, u := range users {
+		iu.Id = 0
 		iu.Uid = u.Id
 		iu.IsPoster = iu.Uid == posterID
 		if isNeedAddPoster && iu.IsPoster {
@@ -306,8 +308,19 @@ func NewIssueUserPairs(repo *Repository, issueID, orgID, posterID, assigneeID in
 		}
 	}
 	if isNeedAddPoster {
+		iu.Id = 0
 		iu.Uid = posterID
 		iu.IsPoster = true
+		iu.IsAssigned = iu.Uid == assigneeID
+		if _, err = x.Insert(iu); err != nil {
+			return err
+		}
+	}
+
+	// Add owner's as well.
+	if repo.OwnerId != posterID {
+		iu.Id = 0
+		iu.Uid = repo.OwnerId
 		iu.IsAssigned = iu.Uid == assigneeID
 		if _, err = x.Insert(iu); err != nil {
 			return err
@@ -318,9 +331,10 @@ func NewIssueUserPairs(repo *Repository, issueID, orgID, posterID, assigneeID in
 }
 
 // PairsContains returns true when pairs list contains given issue.
-func PairsContains(ius []*IssueUser, issueId int64) int {
+func PairsContains(ius []*IssueUser, issueId, uid int64) int {
 	for i := range ius {
-		if ius[i].IssueId == issueId {
+		if ius[i].IssueId == issueId &&
+			ius[i].Uid == uid {
 			return i
 		}
 	}
@@ -387,53 +401,54 @@ type IssueStats struct {
 
 // Filter modes.
 const (
-	FM_ASSIGN = iota + 1
+	FM_ALL = iota
+	FM_ASSIGN
 	FM_CREATE
 	FM_MENTION
 )
 
 // GetIssueStats returns issue statistic information by given conditions.
-func GetIssueStats(rid, uid int64, isShowClosed bool, filterMode int) *IssueStats {
+func GetIssueStats(repoID, uid, labelID int64, isShowClosed bool, filterMode int) *IssueStats {
 	stats := &IssueStats{}
 	issue := new(Issue)
-	tmpSess := &xorm.Session{}
 
-	sess := x.Where("repo_id=?", rid)
-	*tmpSess = *sess
-	stats.OpenCount, _ = tmpSess.And("is_closed=?", false).Count(issue)
-	*tmpSess = *sess
-	stats.ClosedCount, _ = tmpSess.And("is_closed=?", true).Count(issue)
-	if isShowClosed {
-		stats.AllCount = stats.ClosedCount
-	} else {
-		stats.AllCount = stats.OpenCount
+	queryStr := "issue.repo_id=? AND issue.is_closed=?"
+	if labelID > 0 {
+		queryStr += " AND issue.label_ids like '%$" + com.ToStr(labelID) + "|%'"
 	}
+	switch filterMode {
+	case FM_ALL:
+		stats.OpenCount, _ = x.Where(queryStr, repoID, false).Count(issue)
+		stats.ClosedCount, _ = x.Where(queryStr, repoID, true).Count(issue)
+		return stats
 
-	if filterMode != FM_MENTION {
-		sess = x.Where("repo_id=?", rid)
-		switch filterMode {
-		case FM_ASSIGN:
-			sess.And("assignee_id=?", uid)
-		case FM_CREATE:
-			sess.And("poster_id=?", uid)
-		default:
-			goto nofilter
+	case FM_ASSIGN:
+		queryStr += " AND assignee_id=?"
+		stats.OpenCount, _ = x.Where(queryStr, repoID, false, uid).Count(issue)
+		stats.ClosedCount, _ = x.Where(queryStr, repoID, true, uid).Count(issue)
+		return stats
+
+	case FM_CREATE:
+		queryStr += " AND poster_id=?"
+		stats.OpenCount, _ = x.Where(queryStr, repoID, false, uid).Count(issue)
+		stats.ClosedCount, _ = x.Where(queryStr, repoID, true, uid).Count(issue)
+		return stats
+
+	case FM_MENTION:
+		queryStr += " AND uid=? AND is_mentioned=?"
+		if labelID > 0 {
+			stats.OpenCount, _ = x.Where(queryStr, repoID, false, uid, true).
+				Join("INNER", "issue", "issue.id = issue_id").Count(new(IssueUser))
+			stats.ClosedCount, _ = x.Where(queryStr, repoID, true, uid, true).
+				Join("INNER", "issue", "issue.id = issue_id").Count(new(IssueUser))
+			return stats
 		}
-		*tmpSess = *sess
-		stats.OpenCount, _ = tmpSess.And("is_closed=?", false).Count(issue)
-		*tmpSess = *sess
-		stats.ClosedCount, _ = tmpSess.And("is_closed=?", true).Count(issue)
-	} else {
-		sess := x.Where("repo_id=?", rid).And("uid=?", uid).And("is_mentioned=?", true)
-		*tmpSess = *sess
-		stats.OpenCount, _ = tmpSess.And("is_closed=?", false).Count(new(IssueUser))
-		*tmpSess = *sess
-		stats.ClosedCount, _ = tmpSess.And("is_closed=?", true).Count(new(IssueUser))
+
+		queryStr = strings.Replace(queryStr, "issue.", "", 2)
+		stats.OpenCount, _ = x.Where(queryStr, repoID, false, uid, true).Count(new(IssueUser))
+		stats.ClosedCount, _ = x.Where(queryStr, repoID, true, uid, true).Count(new(IssueUser))
+		return stats
 	}
-nofilter:
-	stats.AssignCount, _ = x.Where("repo_id=?", rid).And("is_closed=?", isShowClosed).And("assignee_id=?", uid).Count(issue)
-	stats.CreateCount, _ = x.Where("repo_id=?", rid).And("is_closed=?", isShowClosed).And("poster_id=?", uid).Count(issue)
-	stats.MentionCount, _ = x.Where("repo_id=?", rid).And("uid=?", uid).And("is_closed=?", isShowClosed).And("is_mentioned=?", true).Count(new(IssueUser))
 	return stats
 }
 
@@ -448,7 +463,7 @@ func GetUserIssueStats(uid int64, filterMode int) *IssueStats {
 
 // UpdateIssue updates information of issue.
 func UpdateIssue(issue *Issue) error {
-	_, err := x.Id(issue.Id).AllCols().Update(issue)
+	_, err := x.Id(issue.ID).AllCols().Update(issue)
 
 	if err != nil {
 		return err
@@ -518,7 +533,7 @@ func UpdateIssueUserPairsByMentions(uids []int64, iid int64) error {
 
 // Label represents a label of repository for issues.
 type Label struct {
-	Id              int64
+	ID              int64 `xorm:"pk autoincr"`
 	RepoId          int64 `xorm:"INDEX"`
 	Name            string
 	Color           string `xorm:"VARCHAR(7)"`
@@ -545,7 +560,7 @@ func GetLabelById(id int64) (*Label, error) {
 		return nil, ErrLabelNotExist
 	}
 
-	l := &Label{Id: id}
+	l := &Label{ID: id}
 	has, err := x.Get(l)
 	if err != nil {
 		return nil, err
@@ -564,14 +579,13 @@ func GetLabels(repoId int64) ([]*Label, error) {
 
 // UpdateLabel updates label information.
 func UpdateLabel(l *Label) error {
-	_, err := x.Id(l.Id).AllCols().Update(l)
+	_, err := x.Id(l.ID).AllCols().Update(l)
 	return err
 }
 
 // DeleteLabel delete a label of given repository.
-func DeleteLabel(repoId int64, strId string) error {
-	id, _ := com.StrTo(strId).Int64()
-	l, err := GetLabelById(id)
+func DeleteLabel(repoID, labelID int64) error {
+	l, err := GetLabelById(labelID)
 	if err != nil {
 		if err == ErrLabelNotExist {
 			return nil
@@ -579,27 +593,25 @@ func DeleteLabel(repoId int64, strId string) error {
 		return err
 	}
 
-	issues, err := GetIssuesByLabel(repoId, strId)
+	issues, err := GetIssuesByLabel(repoID, labelID)
 	if err != nil {
 		return err
 	}
 
 	sess := x.NewSession()
-	defer sess.Close()
+	defer sessionRelease(sess)
 	if err = sess.Begin(); err != nil {
 		return err
 	}
 
 	for _, issue := range issues {
-		issue.LabelIds = strings.Replace(issue.LabelIds, "$"+strId+"|", "", -1)
-		if _, err = sess.Id(issue.Id).AllCols().Update(issue); err != nil {
-			sess.Rollback()
+		issue.LabelIds = strings.Replace(issue.LabelIds, "$"+com.ToStr(labelID)+"|", "", -1)
+		if _, err = sess.Id(issue.ID).AllCols().Update(issue); err != nil {
 			return err
 		}
 	}
 
 	if _, err = sess.Delete(l); err != nil {
-		sess.Rollback()
 		return err
 	}
 	return sess.Commit()
@@ -780,7 +792,7 @@ func ChangeMilestoneAssign(oldMid, mid int64, issue *Issue) (err error) {
 		}
 
 		rawSql := "UPDATE `issue_user` SET milestone_id = 0 WHERE issue_id = ?"
-		if _, err = sess.Exec(rawSql, issue.Id); err != nil {
+		if _, err = sess.Exec(rawSql, issue.ID); err != nil {
 			sess.Rollback()
 			return err
 		}
@@ -808,7 +820,7 @@ func ChangeMilestoneAssign(oldMid, mid int64, issue *Issue) (err error) {
 		}
 
 		rawSql := "UPDATE `issue_user` SET milestone_id = ? WHERE issue_id = ?"
-		if _, err = sess.Exec(rawSql, m.Id, issue.Id); err != nil {
+		if _, err = sess.Exec(rawSql, m.Id, issue.ID); err != nil {
 			sess.Rollback()
 			return err
 		}
@@ -890,7 +902,7 @@ type Comment struct {
 // CreateComment creates comment of issue or commit.
 func CreateComment(userId, repoId, issueId, commitId, line int64, cmtType CommentType, content string, attachments []int64) (*Comment, error) {
 	sess := x.NewSession()
-	defer sess.Close()
+	defer sessionRelease(sess)
 	if err := sess.Begin(); err != nil {
 		return nil, err
 	}
@@ -899,7 +911,6 @@ func CreateComment(userId, repoId, issueId, commitId, line int64, cmtType Commen
 		CommitId: commitId, Line: line, Content: content}
 
 	if _, err := sess.Insert(comment); err != nil {
-		sess.Rollback()
 		return nil, err
 	}
 
@@ -908,7 +919,6 @@ func CreateComment(userId, repoId, issueId, commitId, line int64, cmtType Commen
 	case COMMENT_TYPE_COMMENT:
 		rawSql := "UPDATE `issue` SET num_comments = num_comments + 1 WHERE id = ?"
 		if _, err := sess.Exec(rawSql, issueId); err != nil {
-			sess.Rollback()
 			return nil, err
 		}
 
@@ -922,20 +932,17 @@ func CreateComment(userId, repoId, issueId, commitId, line int64, cmtType Commen
 			}
 
 			if _, err := sess.Exec(rawSql, comment.Id, strings.Join(astrs, ",")); err != nil {
-				sess.Rollback()
 				return nil, err
 			}
 		}
 	case COMMENT_TYPE_REOPEN:
 		rawSql := "UPDATE `repository` SET num_closed_issues = num_closed_issues - 1 WHERE id = ?"
 		if _, err := sess.Exec(rawSql, repoId); err != nil {
-			sess.Rollback()
 			return nil, err
 		}
 	case COMMENT_TYPE_CLOSE:
 		rawSql := "UPDATE `repository` SET num_closed_issues = num_closed_issues + 1 WHERE id = ?"
 		if _, err := sess.Exec(rawSql, repoId); err != nil {
-			sess.Rollback()
 			return nil, err
 		}
 	}

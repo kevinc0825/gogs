@@ -53,15 +53,18 @@ func SettingsPost(ctx *middleware.Context, form auth.RepoSettingForm) {
 		newRepoName := form.RepoName
 		// Check if repository name has been changed.
 		if ctx.Repo.Repository.Name != newRepoName {
-			if models.IsRepositoryExist(ctx.Repo.Owner, newRepoName) {
-				ctx.Data["Err_RepoName"] = true
-				ctx.RenderWithErr(ctx.Tr("form.repo_name_been_taken"), SETTINGS_OPTIONS, nil)
-				return
-			} else if err := models.ChangeRepositoryName(ctx.Repo.Owner.Name, ctx.Repo.Repository.Name, newRepoName); err != nil {
-				if err == models.ErrRepoNameIllegal {
+			if err := models.ChangeRepositoryName(ctx.Repo.Owner, ctx.Repo.Repository.Name, newRepoName); err != nil {
+				switch {
+				case err == models.ErrRepoAlreadyExist:
 					ctx.Data["Err_RepoName"] = true
-					ctx.RenderWithErr(ctx.Tr("form.illegal_repo_name"), SETTINGS_OPTIONS, nil)
-				} else {
+					ctx.RenderWithErr(ctx.Tr("form.repo_name_been_taken"), SETTINGS_OPTIONS, &form)
+				case models.IsErrNameReserved(err):
+					ctx.Data["Err_RepoName"] = true
+					ctx.RenderWithErr(ctx.Tr("repo.form.name_reserved", err.(models.ErrNameReserved).Name), SETTINGS_OPTIONS, &form)
+				case models.IsErrNamePatternNotAllowed(err):
+					ctx.Data["Err_RepoName"] = true
+					ctx.RenderWithErr(ctx.Tr("repo.form.name_pattern_not_allowed", err.(models.ErrNamePatternNotAllowed).Pattern), SETTINGS_OPTIONS, &form)
+				default:
 					ctx.Handle(500, "ChangeRepositoryName", err)
 				}
 				return
@@ -279,6 +282,7 @@ func WebHooksNew(ctx *middleware.Context) {
 	ctx.Data["PageIsSettingsHooksNew"] = true
 	ctx.Data["Webhook"] = models.Webhook{HookEvent: &models.HookEvent{}}
 	renderHookTypes(ctx)
+
 	orCtx, err := getOrgRepoCtx(ctx)
 	if err != nil {
 		ctx.Handle(500, "WebHooksNew(getOrgRepoCtx)", err)
@@ -293,6 +297,7 @@ func WebHooksNewPost(ctx *middleware.Context, form auth.NewWebhookForm) {
 	ctx.Data["PageIsSettingsHooks"] = true
 	ctx.Data["PageIsSettingsHooksNew"] = true
 	ctx.Data["Webhook"] = models.Webhook{HookEvent: &models.HookEvent{}}
+	renderHookTypes(ctx)
 
 	orCtx, err := getOrgRepoCtx(ctx)
 	if err != nil {
@@ -361,14 +366,10 @@ func WebHooksEdit(ctx *middleware.Context) {
 	// set data per HookTaskType
 	switch w.HookTaskType {
 	case models.SLACK:
-		{
-			ctx.Data["SlackHook"] = w.GetSlackHook()
-			ctx.Data["HookType"] = "Slack"
-		}
+		ctx.Data["SlackHook"] = w.GetSlackHook()
+		ctx.Data["HookType"] = "Slack"
 	default:
-		{
-			ctx.Data["HookType"] = "Gogs"
-		}
+		ctx.Data["HookType"] = "Gogs"
 	}
 	w.GetEvent()
 	ctx.Data["Webhook"] = w
@@ -399,6 +400,15 @@ func WebHooksEditPost(ctx *middleware.Context, form auth.NewWebhookForm) {
 			ctx.Handle(500, "GetWebhookById", err)
 		}
 		return
+	}
+
+	// set data per HookTaskType
+	switch w.HookTaskType {
+	case models.SLACK:
+		ctx.Data["SlackHook"] = w.GetSlackHook()
+		ctx.Data["HookType"] = "Slack"
+	default:
+		ctx.Data["HookType"] = "Gogs"
 	}
 	w.GetEvent()
 	ctx.Data["Webhook"] = w
@@ -623,4 +633,8 @@ func GitHooksEditPost(ctx *middleware.Context) {
 		return
 	}
 	ctx.Redirect(ctx.Repo.RepoLink + "/settings/hooks/git")
+}
+
+func TriggerHook(ctx *middleware.Context) {
+	models.HookQueue.AddRepoID(ctx.Repo.Repository.Id)
 }

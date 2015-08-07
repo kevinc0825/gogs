@@ -7,7 +7,7 @@ Gogs (Go Git Service) is a painless self-hosted Git service.
 
 ![Demo](http://gogs.qiniudn.com/gogs_demo.gif)
 
-##### Current version: 0.6.1 Beta
+##### Current version: 0.6.3 Beta
 
 ### NOTICES
 
@@ -52,12 +52,26 @@ The goal of this project is to make the easiest, fastest, and most painless way 
 - Drone CI integration
 - Supports MySQL, PostgreSQL and SQLite3
 - Social account login (GitHub, Google, QQ, Weibo)
-- Multi-language support ([11 languages](https://crowdin.com/project/gogs))
+- Multi-language support ([14 languages](https://crowdin.com/project/gogs))
 
 ## System Requirements
 
 - A cheap Raspberry Pi is powerful enough for basic functionality.
 - At least 2 CPU cores and 1GB RAM would be the baseline for teamwork.
+
+## Browser Support
+
+According to [Semantic UI](https://github.com/Semantic-Org/Semantic-UI/tree/1.x):
+
+- Last 2 Versions FF, Chrome, IE 10+
+- Safari 6
+- IE 9+ (Browser prefix only)
+- Android 4
+- Blackberry 10
+
+Browser prefixes are present for Internet Explorer 9, but the browser is not officially supported.
+
+The official support minimal size  is 1024*768, UI may still looks right in smaller size but no promises and fixes.
 
 ## Installation
 
@@ -83,6 +97,7 @@ There are 5 ways to install Gogs:
 ## Contributors
 
 - The [core team](http://gogs.io/team) of this project.
+- Ex-team members [@lunny](https://github.com/lunny) and [@fuxiaohei](https://github.com/fuxiaohei).
 - See [contributors page](https://github.com/gogits/gogs/graphs/contributors) for full list of contributors.
 - See [TRANSLATORS](conf/locale/TRANSLATORS) for full list of translators.
 

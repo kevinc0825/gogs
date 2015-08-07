@@ -10,12 +10,19 @@ import (
 	"strings"
 
 	"github.com/Unknwon/macaron"
+	"github.com/mcuadros/go-version"
+	"github.com/mssola/user_agent"
 
 	"github.com/gogits/gogs/models"
 	"github.com/gogits/gogs/modules/base"
 	"github.com/gogits/gogs/modules/git"
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/setting"
+)
+
+const (
+	FIREFOX_COPY_SUPPORT = "41.0"
+	CHROME_COPY_SUPPORT  = "43.0.2356"
 )
 
 func ApiRepoAssignment() macaron.Handler {
@@ -345,6 +352,13 @@ func RepoAssignment(redirect bool, args ...bool) macaron.Handler {
 
 		ctx.Data["BranchName"] = ctx.Repo.BranchName
 		ctx.Data["CommitId"] = ctx.Repo.CommitId
+
+		userAgent := ctx.Req.Header.Get("User-Agent")
+		ua := user_agent.New(userAgent)
+		browserName, browserVer := ua.Browser()
+
+		ctx.Data["BrowserSupportsCopy"] = (browserName == "Chrome" && version.Compare(browserVer, CHROME_COPY_SUPPORT, ">=")) ||
+			(browserName == "Firefox" && version.Compare(browserVer, FIREFOX_COPY_SUPPORT, ">="))
 	}
 }
 
